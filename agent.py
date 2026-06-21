@@ -75,3 +75,48 @@ def initial_recommendation() -> dict[str, Any]:
         "amenities_highlight": [],
         "upsell_suggestion": None,
     }
+def build_initial_workflow_state() -> dict[str, Any]:
+    request = blank_request()
+    validation = validate_required_booking_fields(request)
+    recommendation = initial_recommendation()
+    availability = apply_availability_and_pricing_rules(request, validation, recommendation)
+    checklist = generate_booking_checklist(request, recommendation, availability)
+    packet = build_booking_packet(request, validation, recommendation, availability, checklist)
+    return {
+        "guest_request": request,
+        "field_validation": validation,
+        "room_recommendation": recommendation,
+        "availability_decision": availability,
+        "booking_checklist": checklist,
+        "booking_packet": packet,
+        "final_markdown": packet["markdown"],
+    }
+def _content(text: str) -> genai_types.Content:
+    return genai_types.Content(role="model", parts=[genai_types.Part(text=text)])
+
+def _state_event(author: str, text: str, updates: dict[str, Any]) -> Event:
+    return Event(
+        author=author, #this indicate the agent name that generated the event
+        content=_content(text),
+        actions=EventActions(state_delta=updates),
+    )
+class FinalPacketNode(FunctionNode):
+    """Function node that emits the final booking packet Markdown."""
+
+    @override
+    async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
+        result = self.handler(ctx)
+        updates = {self.output_key: result, "final_markdown": result["markdown"]}
+        ctx.session.state.update(updates)
+        yield _state_event(self.name, result["markdown"], updates)
+
+def _validate_handler(ctx: InvocationContext) -> dict[str, Any]:
+    return validate_required_booking_fields(ctx.session.state.get("guest_request"))
+
+
+def _availability_handler(ctx: InvocationContext) -> dict[str, Any]:
+    return apply_availability_and_pricing_rules(
+        ctx.session.state.get("guest_request"),
+        ctx.session.state.get("field_validation"),
+        ctx.session.state.get("room_recommendation"),
+    )
